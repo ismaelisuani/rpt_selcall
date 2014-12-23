@@ -4,6 +4,8 @@
 # Except for selcall directories:
 !.gitignore
 
+!README.md
+
 !decoders/
 !decoders/selcall/
 !decoders/selcall/*
