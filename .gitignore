@@ -1,0 +1,12 @@
+# Ignore everything:
+*
+
+# Except for selcall directories:
+!.gitignore
+
+!decoders/
+!decoders/selcall/
+!decoders/selcall/*
+
+!apps/
+!apps/app_rpt.c
