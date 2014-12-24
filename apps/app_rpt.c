@@ -20532,20 +20532,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 				short *sp;
 				int n;
 #endif
-#ifdef	_SELCALL_H_
-				int i;
-				if(myrpt->p.selcall) {
-					sp = (short *) AST_FRAME_DATAP(f);
-					process_selcall(sp,f->datalen, myrpt->selcall);
-					for(i = 0; i < myrpt->selcall->numdemod; i++) {
-						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
-							ast_verbose("NODE: %s, %s: %s\n", myrpt->name,myrpt->selcall->dem_st[i].dem_par->name,
-								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
-						}
-					}
-				}
-#endif
 				if (myrpt->p.rxburstfreq)
 				{
 					if ((!myrpt->reallykeyed) || myrpt->keyed)
@@ -20673,6 +20659,20 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						mdc1200_notify(myrpt,NULL,ustr);
 						mdc1200_send(myrpt,ustr);
 						mdc1200_cmd(myrpt,ustr);
+					}
+				}
+#endif
+#ifdef	_SELCALL_H_
+				int i;
+				if(myrpt->reallykeyed && myrpt->p.selcall) {
+					sp = (short *) AST_FRAME_DATAP(f);
+					process_selcall(sp,f->datalen, myrpt->selcall);
+					for(i = 0; i < myrpt->selcall->numdemod; i++) {
+						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
+							ast_verbose("NODE: %s, %s: %s\n", myrpt->name,myrpt->selcall->dem_st[i].dem_par->name,
+								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
+							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
+						}
 					}
 				}
 #endif
@@ -25264,9 +25264,9 @@ int reload()
 static int reload(void)
 #endif
 {
-int	i,n;
+int	i,n,numd;
 struct ast_config *cfg;
-char	*val,*this;
+char	*val,*this,*demod[MAXDEMOD];
 
 #ifdef	NEW_ASTERISK
 	cfg = ast_config_load("rpt.conf",config_flags);
@@ -25332,6 +25332,12 @@ char	*val,*this;
 			rpt_vars[n].tailmessagen = 0;
 #ifdef	_MDC_DECODE_H_
 			rpt_vars[n].mdc = mdc_decoder_new(8000);
+#endif
+#ifdef	_SELCALL_H_
+			if(rpt_vars[n].p.selcall) {
+				numd = explode_string(rpt_vars[n].p.selcall, demod, MAXDEMOD, ',', 0);
+				rpt_vars[n].selcall = selcall_decoder_new(demod, numd);
+			}
 #endif
 			rpt_vars[n].reload1 = 1;
 			if (n >= nrpts) nrpts = n + 1;

@@ -24,7 +24,6 @@
 
 /* ---------------------------------------------------------------------- */
 
-#include "asterisk/logger.h"
 #include "selcall.h"
 #include "multimon.h"
 #include "filter.h"
