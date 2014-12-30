@@ -4592,6 +4592,9 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 	struct flock fl;
 	time_t	t;
 
+	sprintf(str,"MDC,%s",data);
+	donodelog(myrpt,str);
+
 	if (!fromnode)
 	{
 		ast_verbose("Got MDC-1200 data %s from local system (%s)\n",
@@ -20664,14 +20667,20 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 #endif
 #ifdef	_SELCALL_H_
 				int i;
+				char str[100];
+
 				if(myrpt->reallykeyed && myrpt->p.selcall) {
 					sp = (short *) AST_FRAME_DATAP(f);
 					process_selcall(sp,f->datalen, myrpt->selcall);
 					for(i = 0; i < myrpt->selcall->numdemod; i++) {
 						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
-							ast_verbose("NODE: %s, %s: %s\n", myrpt->name,myrpt->selcall->dem_st[i].dem_par->name,
+							sprintf(str,"%s,%s",
+								myrpt->selcall->dem_st[i].dem_par->name,
 								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
+							donodelog(myrpt,str);
+							ast_verbose("NODE %s: %s\n", myrpt->name,str);
+							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,
+								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
 						}
 					}
 				}
