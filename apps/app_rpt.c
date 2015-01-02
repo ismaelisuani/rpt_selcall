@@ -20673,14 +20673,14 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					sp = (short *) AST_FRAME_DATAP(f);
 					process_selcall(sp,f->datalen, myrpt->selcall);
 					for(i = 0; i < myrpt->selcall->numdemod; i++) {
-						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
+						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_last) > 0) {
 							sprintf(str,"%s,%s",
 								myrpt->selcall->dem_st[i].dem_par->name,
-								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
+								myrpt->selcall->dem_st[i].dem_par->selcall_last);
 							donodelog(myrpt,str);
 							ast_verbose("NODE %s: %s\n", myrpt->name,str);
-							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,
-								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
+							memset(myrpt->selcall->dem_st[i].dem_par->selcall_last,0,
+								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_last));
 						}
 					}
 				}
