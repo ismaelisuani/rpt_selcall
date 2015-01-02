@@ -1043,6 +1043,7 @@ static struct rpt
 #ifdef	_SELCALL_H_
 	selcall_decoder_t *selcall;
 #endif
+	char lastdtmfbuf[MAXDTMF];
 
 	struct {
 		char *ourcontext;
@@ -18523,6 +18524,7 @@ char	cmd[MAXDTMF+1] = "",c;
 
 
 	c = c_in & 0x7f;
+/*
 	if (myrpt->p.archivedir)
 	{
 		char str[100];
@@ -18530,6 +18532,7 @@ char	cmd[MAXDTMF+1] = "",c;
 		sprintf(str,"DTMF,MAIN,%c",c);
 		donodelog(myrpt,str);
 	}
+*/
 	if (c == myrpt->p.endchar)
 	{
 	/* if in simple mode, kill autopatch */
@@ -20685,6 +20688,12 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					}
 				}
 #endif
+				if(strlen(myrpt->lastdtmfbuf) >= 3) {
+					sprintf(str,"DTMF,%s", myrpt->lastdtmfbuf);
+					donodelog(myrpt,str);
+					ast_verbose("NODE %s: %s\n", myrpt->name, str);
+					memset(myrpt->lastdtmfbuf,0,sizeof(myrpt->lastdtmfbuf));
+				}
 #ifdef	__RPT_NOTCH
 				/* apply inbound filters, if any */
 				rpt_filter(myrpt,AST_FRAME_DATAP(f),f->datalen / 2);
@@ -20756,6 +20765,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			{
 				c = (char) f->subclass; /* get DTMF char */
 				ast_frfree(f);
+				strncat(myrpt->lastdtmfbuf, &c, 1);
 #ifndef	OLD_ASTERISK
 				x = ast_tvdiff_ms(ast_tvnow(),myrpt->lastdtmftime);
 				if ((myrpt->p.litzcmd) && (x >= myrpt->p.litztime) &&

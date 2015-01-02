@@ -144,7 +144,7 @@ selcall_decoder_t * selcall_decoder_new(char *demod[], int numd)
 		return (selcall_decoder_t *) 0L;
 
 	for(i = 0; i < numd; i++) {
-		if (strcasecmp(demod[i], "ccir") == 0)       selcall->dem[i] = &demod_ccir;
+		if (strcasecmp(demod[i], "ccir") == 0)  selcall->dem[i] = &demod_ccir;
 		else if (strcasecmp(demod[i], "eea") == 0)   selcall->dem[i] = &demod_eea;
 		else if (strcasecmp(demod[i], "eia") == 0)   selcall->dem[i] = &demod_eia;
 		else if (strcasecmp(demod[i], "zvei1") == 0) selcall->dem[i] = &demod_zvei1;
