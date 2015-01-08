@@ -5420,7 +5420,7 @@ int	n;
 	if (n) snprintf(obuf,sizeof(obuf) - 1,"%d,%s",n,buf);
 	else strcpy(obuf,"0");
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_LINKS",obuf);
-	rpt_manager_trigger(myrpt, "RPT_LINKS", obuf)
+	rpt_manager_trigger(myrpt, "RPT_LINKS", obuf);
 	snprintf(obuf,sizeof(obuf) - 1,"%d",n);
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_NUMLINKS",obuf);
 	rpt_manager_trigger(myrpt, "RPT_NUMLINKS", obuf);
@@ -20675,17 +20675,19 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 #endif
 #ifdef	_SELCALL_H_
 				int i;
-				char str[100];
+				char str[100], *demod_name;
 
 				if(myrpt->reallykeyed && myrpt->p.selcall) {
 					sp = (short *) AST_FRAME_DATAP(f);
 					process_selcall(sp,f->datalen, myrpt->selcall);
 					for(i = 0; i < myrpt->selcall->numdemod; i++) {
 						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_last) > 0) {
-							sprintf(str,"%s,%s",
-								myrpt->selcall->dem_st[i].dem_par->name,
+							demod_name = myrpt->selcall->dem_st[i].dem_par->name;
+								sprintf(str,"%s,%s",
+								demod_name,
 								myrpt->selcall->dem_st[i].dem_par->selcall_last);
 							donodelog(myrpt,str);
+							rpt_manager_trigger(myrpt,demod_name,myrpt->selcall->dem_st[i].dem_par->selcall_last);
 							ast_verbose("NODE %s: %s\n", myrpt->name,str);
 							memset(myrpt->selcall->dem_st[i].dem_par->selcall_last,0,
 								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_last));
