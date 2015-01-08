@@ -1366,6 +1366,7 @@ static int setrtx_check(struct rpt *myrpt);
 static int channel_revert(struct rpt *myrpt);
 static int channel_steer(struct rpt *myrpt, char *data);
 static void rpt_telemetry(struct rpt *myrpt,int mode, void *data);
+static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value);
 
 AST_MUTEX_DEFINE_STATIC(nodeloglock);
 
@@ -4593,6 +4594,7 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 	struct flock fl;
 	time_t	t;
 
+	rpt_manager_trigger(myrpt, "MDC-1200", data);
 	sprintf(str,"MDC,%s",data);
 	donodelog(myrpt,str);
 
@@ -5388,6 +5390,7 @@ char	buf[10];
 	buf[1] = 0;
 	if (newval > 0) buf[0] = '1';
 	pbx_builtin_setvar_helper(myrpt->rxchannel, varname, buf);
+	rpt_manager_trigger(myrpt, varname, buf);
 	if (newval >= 0) rpt_event_process(myrpt);
 	return;
 }
@@ -5405,8 +5408,10 @@ int	n;
 	if (n) snprintf(obuf,sizeof(obuf) - 1,"%d,%s",n,buf);
 	else strcpy(obuf,"0");
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_ALINKS",obuf);
+	rpt_manager_trigger(myrpt, "RPT_ALINKS", obuf);
 	snprintf(obuf,sizeof(obuf) - 1,"%d",n);
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_NUMALINKS",obuf);
+	rpt_manager_trigger(myrpt, "RPT_NUMALINKS", obuf);
 	ast_mutex_lock(&myrpt->lock);
 	__mklinklist(myrpt,NULL,buf,0);
 	ast_mutex_unlock(&myrpt->lock);
@@ -5415,8 +5420,10 @@ int	n;
 	if (n) snprintf(obuf,sizeof(obuf) - 1,"%d,%s",n,buf);
 	else strcpy(obuf,"0");
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_LINKS",obuf);
+	rpt_manager_trigger(myrpt, "RPT_LINKS", obuf)
 	snprintf(obuf,sizeof(obuf) - 1,"%d",n);
 	pbx_builtin_setvar_helper(myrpt->rxchannel,"RPT_NUMLINKS",obuf);
+	rpt_manager_trigger(myrpt, "RPT_NUMLINKS", obuf);
 	rpt_event_process(myrpt);
 	return;
 }
@@ -18522,9 +18529,8 @@ int	res;
 pthread_attr_t	attr;
 char	cmd[MAXDTMF+1] = "",c;
 
-
+	rpt_manager_trigger(myrpt, "DTMF", &c_in);
 	c = c_in & 0x7f;
-/*
 	if (myrpt->p.archivedir)
 	{
 		char str[100];
@@ -18532,7 +18538,6 @@ char	cmd[MAXDTMF+1] = "",c;
 		sprintf(str,"DTMF,MAIN,%c",c);
 		donodelog(myrpt,str);
 	}
-*/
 	if (c == myrpt->p.endchar)
 	{
 	/* if in simple mode, kill autopatch */
@@ -24140,6 +24145,19 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 	LOCAL_USER_REMOVE(u);
 #endif
 	return res;
+}
+
+static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value)
+{
+        manager_event(
+                EVENT_FLAG_SYSTEM, event,
+                "Node: %s\r\nChannel: %s\r\nEventValue: %s\r\nLastKeyedTime: %s\rLastTxKeyedTime: %s\r",
+                myrpt->name,
+                myrpt->rxchannel->name,
+                value,
+                ctime(&myrpt->lastkeyedtime),
+                ctime(&myrpt->lasttxkeyedtime)
+        );
 }
 
 #ifndef OLD_ASTERISK
