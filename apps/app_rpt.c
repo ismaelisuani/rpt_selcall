@@ -18527,10 +18527,13 @@ static void local_dtmf_helper(struct rpt *myrpt,char c_in)
 {
 int	res;
 pthread_attr_t	attr;
-char	cmd[MAXDTMF+1] = "",c;
+char	cmd[MAXDTMF+1] = "",c,tone[10];
 
-	rpt_manager_trigger(myrpt, "DTMF", &c_in);
 	c = c_in & 0x7f;
+
+	sprintf(tone,"%c",c);
+	rpt_manager_trigger(myrpt, "DTMF", tone);
+
 	if (myrpt->p.archivedir)
 	{
 		char str[100];
@@ -24151,14 +24154,14 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 
 static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value)
 {
-        manager_event(
-                EVENT_FLAG_SYSTEM, event,
-                "Node: %s\r\nChannel: %s\r\nEventValue: %s\r\nLastKeyedTime: %s\rLastTxKeyedTime: %s\r",
-                myrpt->name,
-                myrpt->rxchannel->name,
-                value,
-                ctime(&myrpt->lastkeyedtime),
-                ctime(&myrpt->lasttxkeyedtime)
+	manager_event(EVENT_FLAG_CALL, event,
+                "Node: %s\r\n"
+		"Channel: %s\r\n"
+		"EventValue: %s\r\n"
+		"LastKeyedTime: %s\r\n"
+		"LastTxKeyedTime: %s\r\n",
+                myrpt->name, myrpt->rxchannel->name, value,
+                ctime(&myrpt->lastkeyedtime), ctime(&myrpt->lasttxkeyedtime)
         );
 }
 
