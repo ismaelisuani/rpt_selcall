@@ -1345,6 +1345,8 @@ static struct rpt
 	struct timeval paging;
 	char deferid;
 	struct timeval lastlinktime;
+	time_t startkey;
+	time_t endkey;
 } rpt_vars[MAXRPTS];	
 
 struct nodelog {
@@ -4421,7 +4423,7 @@ struct        rpt_link *l;
 static void donodelog(struct rpt *myrpt,char *str)
 {
 struct nodelog *nodep;
-char	datestr[100];
+char    datestr[100];
 
 	if (!myrpt->p.archivedir) return;
 	nodep = (struct nodelog *)ast_malloc(sizeof(struct nodelog));
@@ -4434,7 +4436,7 @@ char	datestr[100];
 	strncpy(nodep->archivedir,myrpt->p.archivedir,
 		sizeof(nodep->archivedir) - 1);
 	strftime(datestr,sizeof(datestr) - 1,"%Y%m%d%H%M%S",
-		localtime(&nodep->timestamp));
+                localtime(&nodep->timestamp));
 	snprintf(nodep->str,sizeof(nodep->str) - 1,"%s %s,%s\n",
 		myrpt->name,datestr,str);
 	ast_mutex_lock(&nodeloglock);
@@ -5089,22 +5091,17 @@ int	i,spos;
 			spos++;
 		}
 		if (flag)
-		{
-			snprintf(buf + spos,MAXLINKLIST - spos,
-				"%s%c%c",l->name,mode,(l->lastrx1) ? 'K' : 'U');
-		}
+			snprintf(buf + spos,MAXLINKLIST - spos,"%s",l->name);
 		else
 		{
 			/* add nodes into buffer */
 			if (l->linklist[0])
 			{
-				snprintf(buf + spos,MAXLINKLIST - spos,
-					"%c%s,%s",mode,l->name,l->linklist);
+				snprintf(buf + spos,MAXLINKLIST - spos,"%s,%s",l->name,l->linklist);
 			}
 			else /* if no nodes, add this node into buffer */
 			{
-				snprintf(buf + spos,MAXLINKLIST - spos,
-					"%c%s",mode,l->name);
+				snprintf(buf + spos,MAXLINKLIST - spos,"%s",l->name);
 			}	
 		}
 		/* if we are in tranceive mode, let all modes stand */
@@ -5117,6 +5114,54 @@ int	i,spos;
 		}
 	}
 	return;
+}
+
+static void recording_log(struct rpt *myrpt, char inout, char *who)
+{
+	FILE *fp;
+	struct flock fl;
+	char myfname[100],datestr[100],mydate[50],mytime[50], links[MAXLINKLIST];
+
+	if (!myrpt->p.archivedir) return;
+
+	strftime(datestr,sizeof(datestr) - 1,"%Y%m%d%H%M%S",
+                localtime(&myrpt->startkey));
+	sprintf(myfname,"%s/%s/%s.txt",myrpt->p.archivedir,myrpt->name,datestr);
+
+	fp = fopen(myfname,"a");
+	if(!fp)
+	{
+		ast_log(LOG_ERROR,"Cannot open RECORDING log file %s\n", datestr);
+		return;
+	}
+	fl.l_type = F_WRLCK;
+	fl.l_whence = SEEK_SET;
+	fl.l_start = 0;
+	fl.l_len = 0;
+	fl.l_pid = pthread_self();
+	if (fcntl(fileno(fp),F_SETLKW,&fl) == -1)
+	{
+		ast_log(LOG_ERROR,"Cannot get lock on RECORDING log file %s\n", datestr);
+		fclose(fp);
+		return;
+	}
+	strftime(mydate,sizeof(mydate) - 1,"%Y%m%d",
+		localtime(&myrpt->startkey));
+	strftime(mytime,sizeof(mytime) - 1,"%H%M%S",
+		localtime(&myrpt->startkey));
+
+	ast_mutex_lock(&myrpt->lock);
+	__mklinklist(myrpt,NULL,links,1);
+	ast_mutex_unlock(&myrpt->lock);
+
+	fprintf(fp,"Fecha=%s\r\nHora=%s\r\nNodo=%s\r\nCanal=%s\r\nSegundos=%d\r\nEntraSale=%c\r\nNroLinea=%s\r\nLinkId=%s\r\nNroRemoto=%s\r\n",
+		mydate, mytime, myrpt->name, myrpt->name,
+		(int)difftime(myrpt->endkey, myrpt->startkey),
+		inout, who, datestr, links);
+
+	fl.l_type = F_UNLCK;
+	fcntl(fileno(fp),F_SETLK,&fl);
+	fclose(fp);
 }
 
 /* must be called locked */
@@ -19842,8 +19887,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 		if (myrpt->p.elke && (myrpt->elketimer > myrpt->p.elke)) totx = 0;
 		if (totx && (!lasttx))
 		{
-			char mydate[100],myfname[100];
-			time_t myt;
+			char mydate[100], myfname[100];
 
 			if (myrpt->monstream) ast_closestream(myrpt->monstream);
 			myrpt->monstream = 0;
@@ -19851,9 +19895,9 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			{
 				long blocksleft;
 
-				time(&myt);
+				time(&myrpt->startkey);
 				strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-					localtime(&myt));
+					localtime(&myrpt->startkey));
 				sprintf(myfname,"%s/%s/%s",myrpt->p.archivedir,
 					myrpt->name,mydate);
 				myrpt->monstream = ast_writefile(myfname,"wav49",
@@ -20106,7 +20150,9 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					if (myrpt->p.archivedir)
 					{
 						char str[100];
-							sprintf(str,"RXUNKEY,%s",l->name);
+						time(&myrpt->endkey);
+						recording_log(myrpt,'S',l->name);
+						sprintf(str,"RXUNKEY,%s",l->name);
 						donodelog(myrpt,str);
 					}
 					l->lastrx1 = 0;
@@ -20198,6 +20244,8 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						{
 							char str[100];
 	
+							time(&myrpt->endkey);
+							recording_log(myrpt,'S',l->name);
 							sprintf(str,"RXUNKEY(T),%s",l->name);
 							donodelog(myrpt,str);
 						}
@@ -20841,11 +20889,10 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						{
 							char myfname[100],mydate[100];
 							long blocksleft;
-							time_t myt;
 
-							time(&myt);
+							time(&myrpt->startkey);
 							strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-							localtime(&myt));
+								localtime(&myrpt->startkey));
 							sprintf(myfname,"%s/%s/%s",myrpt->p.archivedir,
 								myrpt->name,mydate);
 							if (myrpt->p.monminblocks)
@@ -20960,6 +21007,9 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					}
 					if (myrpt->p.archivedir)
 					{
+
+						time(&myrpt->endkey);
+						recording_log(myrpt,'E',NULL);
 						donodelog(myrpt,"RXUNKEY,MAIN");
 					}
 					rpt_update_boolean(myrpt,"RPT_RXKEYED",0);
@@ -21368,6 +21418,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							{
 								char str[100];
 
+								time(&myrpt->startkey);
 								sprintf(str,"RXKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -21546,6 +21597,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							{
 								char str[100];
 
+								time(&myrpt->startkey);
 								sprintf(str,"RXKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -21567,6 +21619,8 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							{
 								char str[100];
 
+								time(&myrpt->endkey);
+								recording_log(myrpt,'S',l->name);
 								sprintf(str,"RXUNKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -23405,17 +23459,16 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 		b1 = b;
 	if (myrpt->p.archivedir)
 	{
-		char mycmd[100],mydate[100];
-		time_t myt;
+		char mydate[100],mycmd[100];
 		long blocksleft;
 
 
 		mkdir(myrpt->p.archivedir,0600);
 		sprintf(mycmd,"%s/%s",myrpt->p.archivedir,myrpt->name);
 		mkdir(mycmd,0600);
-		time(&myt);
+		time(&myrpt->startkey);
 		strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-			localtime(&myt));
+			localtime(&myrpt->startkey));
 		sprintf(mycmd,"mixmonitor start %s %s/%s/%s.wav49 a",chan->name,
 			myrpt->p.archivedir,myrpt->name,mydate);
 		if (myrpt->p.monminblocks)
