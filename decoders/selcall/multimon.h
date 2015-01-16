@@ -256,7 +256,6 @@ struct demod_param {
     void (*demod)(struct demod_state *s, buffer_t buffer, int length);
     void (*deinit)(struct demod_state *s);
     char selcall_buf[10];
-    char selcall_last[10];
     int selcall_idx;
 };
 

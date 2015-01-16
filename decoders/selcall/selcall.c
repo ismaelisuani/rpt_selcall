@@ -123,8 +123,6 @@ void selcall_demod(struct demod_state *s, const float *buffer, int length,
             if(i == -1 && s->l1.selcall.timeout != 0)
                 s->l1.selcall.timeout++;
             if(s->l1.selcall.timeout > TIMEOUT_LIMIT+1) {
-		memset(s->dem_par->selcall_last, 0, sizeof(s->dem_par->selcall_last));
-		memcpy(s->dem_par->selcall_last, s->dem_par->selcall_buf, sizeof(s->dem_par->selcall_buf));
 		memset(s->dem_par->selcall_buf, 0, sizeof(s->dem_par->selcall_buf));
 		s->dem_par->selcall_idx = 0;
                 s->l1.selcall.timeout = 0;

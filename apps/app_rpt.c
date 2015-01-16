@@ -1347,6 +1347,7 @@ static struct rpt
 	struct timeval lastlinktime;
 	time_t startkey;
 	time_t endkey;
+	char lastdecode[50];
 } rpt_vars[MAXRPTS];	
 
 struct nodelog {
@@ -4598,6 +4599,7 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 
 	rpt_manager_trigger(myrpt, "MDC-1200", data);
 	sprintf(str,"MDC,%s",data);
+	strcpy(myrpt->lastdecode,str);
 	donodelog(myrpt,str);
 
 	if (!fromnode)
@@ -20726,28 +20728,31 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 #endif
 #ifdef	_SELCALL_H_
 				int i;
-				char str[100], *demod_name;
+				char str[100];
 
 				if(myrpt->reallykeyed && myrpt->p.selcall) {
 					sp = (short *) AST_FRAME_DATAP(f);
 					process_selcall(sp,f->datalen, myrpt->selcall);
 					for(i = 0; i < myrpt->selcall->numdemod; i++) {
-						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_last) > 0) {
-							demod_name = myrpt->selcall->dem_st[i].dem_par->name;
-								sprintf(str,"%s,%s",
-								demod_name,
-								myrpt->selcall->dem_st[i].dem_par->selcall_last);
+						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
+							sprintf(str,"%s,%s",
+								myrpt->selcall->dem_st[i].dem_par->name,
+								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
+							rpt_manager_trigger(myrpt,
+								myrpt->selcall->dem_st[i].dem_par->name,
+								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
+							strcpy(myrpt->lastdecode,str);
 							donodelog(myrpt,str);
-							rpt_manager_trigger(myrpt,demod_name,myrpt->selcall->dem_st[i].dem_par->selcall_last);
 							ast_verbose("NODE %s: %s\n", myrpt->name,str);
-							memset(myrpt->selcall->dem_st[i].dem_par->selcall_last,0,
-								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_last));
+							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,
+								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
 						}
 					}
 				}
 #endif
 				if(strlen(myrpt->lastdtmfbuf) >= 3) {
 					sprintf(str,"DTMF,%s", myrpt->lastdtmfbuf);
+					strcpy(myrpt->lastdecode,str);
 					donodelog(myrpt,str);
 					ast_verbose("NODE %s: %s\n", myrpt->name, str);
 					memset(myrpt->lastdtmfbuf,0,sizeof(myrpt->lastdtmfbuf));
@@ -20907,6 +20912,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						}
 						donodelog(myrpt,"RXKEY,MAIN");
 					}
+					memset(myrpt->lastdecode,0,sizeof(myrpt->lastdecode));
 					rpt_update_boolean(myrpt,"RPT_RXKEYED",1);
 					myrpt->elketimer = 0;
 					myrpt->localoverride = 0;
@@ -21009,7 +21015,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					{
 
 						time(&myrpt->endkey);
-						recording_log(myrpt,'E',NULL);
+						recording_log(myrpt,'E',myrpt->lastdecode);
 						donodelog(myrpt,"RXUNKEY,MAIN");
 					}
 					rpt_update_boolean(myrpt,"RPT_RXKEYED",0);
@@ -24211,10 +24217,10 @@ static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value)
                 "Node: %s\r\n"
 		"Channel: %s\r\n"
 		"EventValue: %s\r\n"
-		"LastKeyedTime: %s\r\n"
-		"LastTxKeyedTime: %s\r\n",
+		"StartKey: %s\r\n"
+		"EndKey: %s\r\n",
                 myrpt->name, myrpt->rxchannel->name, value,
-                ctime(&myrpt->lastkeyedtime), ctime(&myrpt->lasttxkeyedtime)
+                ctime(&myrpt->startkey), ctime(&myrpt->endkey)
         );
 }
 
