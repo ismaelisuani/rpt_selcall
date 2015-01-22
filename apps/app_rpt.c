@@ -1018,6 +1018,20 @@ typedef struct
 
 } tone_detect_state_t;
 
+typedef struct {
+	struct timeval startkey;
+	struct timeval endkey;
+	char date[50];
+	char time[50];
+	float length;
+	char inout;
+	char unitID[50];
+	char linkid[100];
+	char remoteid[100];
+	char decoder[100];
+	char filename[100];
+} rpt_info;
+
 static struct rpt
 {
 	ast_mutex_t lock;
@@ -1043,7 +1057,7 @@ static struct rpt
 #ifdef	_SELCALL_H_
 	selcall_decoder_t *selcall;
 #endif
-	char lastdtmfbuf[MAXDTMF];
+	rpt_info *info;
 
 	struct {
 		char *ourcontext;
@@ -1169,6 +1183,8 @@ static struct rpt
 		char *ldisc[MAX_LSTUFF];
 		int nldisc;
 		char *timezone;
+		char *cate;
+		char *node;
 #ifdef	_SELCALL_H_
 		char *selcall;
 #endif
@@ -1345,9 +1361,6 @@ static struct rpt
 	struct timeval paging;
 	char deferid;
 	struct timeval lastlinktime;
-	time_t startkey;
-	time_t endkey;
-	char lastdecode[50];
 } rpt_vars[MAXRPTS];	
 
 struct nodelog {
@@ -1370,6 +1383,10 @@ static int channel_revert(struct rpt *myrpt);
 static int channel_steer(struct rpt *myrpt, char *data);
 static void rpt_telemetry(struct rpt *myrpt,int mode, void *data);
 static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value);
+static rpt_info* rpt_info_init(void);
+static void rpt_info_key(struct rpt *myrpt, char inout);
+static void rpt_info_unkey(struct rpt *myrpt);
+static void rpt_info_log(struct rpt *myrpt);
 
 AST_MUTEX_DEFINE_STATIC(nodeloglock);
 
@@ -2063,6 +2080,18 @@ static inline void goertzel_init(goertzel_state_t *s, float freq, int samples)
 static inline void goertzel_reset(goertzel_state_t *s)
 {
 	s->v2 = s->v3 = s->chunky = 0.0;
+}
+
+static rpt_info* rpt_info_init()
+{
+	rpt_info *info;
+
+	if(!(info = (rpt_info *) ast_malloc(sizeof(rpt_info)))) {
+		ast_log(LOG_WARNING, "Out of memory\n");
+		return NULL;
+	}
+
+	return info;
 }
 
 static void tone_detect_init(tone_detect_state_t *s, int freq, int duration, int amp)
@@ -4597,9 +4626,10 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 	struct flock fl;
 	time_t	t;
 
-	rpt_manager_trigger(myrpt, "MDC-1200", data);
+	rpt_manager_trigger(myrpt, "MDC1200", data);
 	sprintf(str,"MDC,%s",data);
-	strcpy(myrpt->lastdecode,str);
+	strcpy(myrpt->info->decoder,"MDC1200");
+	strcpy(myrpt->info->unitID,data);
 	donodelog(myrpt,str);
 
 	if (!fromnode)
@@ -5118,22 +5148,56 @@ int	i,spos;
 	return;
 }
 
-static void recording_log(struct rpt *myrpt, char inout, char *who)
+static void rpt_info_key(struct rpt *myrpt, char inout)
+{
+	char datestr[100];
+
+	if (!myrpt->info) return;
+
+	myrpt->info->startkey = ast_tvnow();
+	strftime(datestr,sizeof(datestr)-1,"%Y%m%d%H%M%S",
+		localtime(&myrpt->info->startkey.tv_sec));
+	sprintf(myrpt->info->linkid,"%s%s%s%2d",myrpt->p.cate,myrpt->p.node,datestr,
+		(int)(myrpt->info->startkey.tv_usec/1000.0));
+	sprintf(myrpt->info->filename,"%s/%s/%s",myrpt->p.archivedir,myrpt->name,myrpt->info->linkid);
+	strftime(myrpt->info->date,sizeof(myrpt->info->date) - 1,"%Y%m%d",
+		localtime(&myrpt->info->startkey.tv_sec));
+	strftime(myrpt->info->time,sizeof(myrpt->info->time) - 1,"%H%M%S",
+		localtime(&myrpt->info->startkey.tv_sec));
+	myrpt->info->inout = inout;
+
+	ast_mutex_lock(&myrpt->lock);
+	__mklinklist(myrpt,NULL,myrpt->info->remoteid,1);
+	ast_mutex_unlock(&myrpt->lock);
+}
+
+static void rpt_info_unkey(struct rpt *myrpt)
+{
+	float length_ms;
+
+	if (!myrpt->info) return;
+
+	myrpt->info->endkey = ast_tvnow();
+	length_ms = ast_tvdiff_ms(myrpt->info->endkey,myrpt->info->startkey)/1000.0;
+	myrpt->info->length = round(length_ms*100.0) / 100.0;
+
+	rpt_info_log(myrpt);
+}
+
+static void rpt_info_log(struct rpt *myrpt)
 {
 	FILE *fp;
 	struct flock fl;
-	char myfname[100],datestr[100],mydate[50],mytime[50], links[MAXLINKLIST];
+	char txt_filename[100]; 
 
-	if (!myrpt->p.archivedir) return;
+	if (!myrpt->info) return;
 
-	strftime(datestr,sizeof(datestr) - 1,"%Y%m%d%H%M%S",
-                localtime(&myrpt->startkey));
-	sprintf(myfname,"%s/%s/%s.txt",myrpt->p.archivedir,myrpt->name,datestr);
-
-	fp = fopen(myfname,"a");
+	sprintf(txt_filename,"%s.%s",myrpt->info->filename,"txt");
+	
+	fp = fopen(txt_filename,"w");
 	if(!fp)
 	{
-		ast_log(LOG_ERROR,"Cannot open RECORDING log file %s\n", datestr);
+		ast_log(LOG_ERROR,"Cannot open RECORDING log file %s\n", txt_filename);
 		return;
 	}
 	fl.l_type = F_WRLCK;
@@ -5143,27 +5207,37 @@ static void recording_log(struct rpt *myrpt, char inout, char *who)
 	fl.l_pid = pthread_self();
 	if (fcntl(fileno(fp),F_SETLKW,&fl) == -1)
 	{
-		ast_log(LOG_ERROR,"Cannot get lock on RECORDING log file %s\n", datestr);
+		ast_log(LOG_ERROR,"Cannot get lock on RECORDING log file %s\n", txt_filename);
 		fclose(fp);
 		return;
 	}
-	strftime(mydate,sizeof(mydate) - 1,"%Y%m%d",
-		localtime(&myrpt->startkey));
-	strftime(mytime,sizeof(mytime) - 1,"%H%M%S",
-		localtime(&myrpt->startkey));
 
-	ast_mutex_lock(&myrpt->lock);
-	__mklinklist(myrpt,NULL,links,1);
-	ast_mutex_unlock(&myrpt->lock);
-
-	fprintf(fp,"Fecha=%s\r\nHora=%s\r\nNodo=%s\r\nCanal=%s\r\nSegundos=%d\r\nEntraSale=%c\r\nNroLinea=%s\r\nLinkId=%s\r\nNroRemoto=%s\r\n",
-		mydate, mytime, myrpt->name, myrpt->name,
-		(int)difftime(myrpt->endkey, myrpt->startkey),
-		inout, who, datestr, links);
+	fprintf(fp,
+		"Fecha=%s\r\n"
+		"Hora=%s\r\n"
+		"Cate=%s\r\n"
+		"Nodo=%s\r\n"
+		"Canal=%s\r\n"
+		"Segundos=%d\r\n"
+		"Milisegundos=%.2f\r\n"
+		"EntraSale=%c\r\n"
+		"NroLinea=%s\r\n"
+		"LinkId=%s\r\n"
+		"NroRemoto=%s\r\n"
+		"Dato8=%s\r\n"
+		"Dato9=%s\r\n"
+		"Dato10=%s\r\n",
+		myrpt->info->date, myrpt->info->time, myrpt->p.cate, myrpt->p.node, myrpt->name,
+		(int)ceil(myrpt->info->length), myrpt->info->length, myrpt->info->inout,
+		myrpt->name, myrpt->info->linkid, "", myrpt->info->unitID,
+		myrpt->info->remoteid, myrpt->info->decoder
+	);
 
 	fl.l_type = F_UNLCK;
 	fcntl(fileno(fp),F_SETLK,&fl);
 	fclose(fp);
+
+	memset(myrpt->info, 0, sizeof(rpt_info));
 }
 
 /* must be called locked */
@@ -6003,6 +6077,10 @@ static char *cs_keywords[] = {"rptena","rptdis","apena","apdis","lnkena","lnkdis
 	/* zot out filters stuff */
 	memset(&rpt_vars[n].filters,0,sizeof(rpt_vars[n].filters));
 #endif
+	val = (char *) ast_variable_retrieve(cfg,"general","cate");
+	if (val) rpt_vars[n].p.cate = val;
+	val = (char *) ast_variable_retrieve(cfg,"general","node");
+	if (val) rpt_vars[n].p.node = val;
 	val = (char *) ast_variable_retrieve(cfg,this,"context");
 	if (val) rpt_vars[n].p.ourcontext = val;
 	else rpt_vars[n].p.ourcontext = this;
@@ -11934,7 +12012,7 @@ static int function_ilink(struct rpt *myrpt, char *param, char *digits, int comm
 		case 17:
 			myrpt->lastunit = 0xd00d;
 			mdc1200_cmd(myrpt,"ID00D");
-			mdc1200_notify(myrpt,NULL,"ID00D");
+			mdc1200_notify(myrpt,NULL,"D00D");
 			mdc1200_send(myrpt,"ID00D");
 			break;
 #endif
@@ -19889,20 +19967,14 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 		if (myrpt->p.elke && (myrpt->elketimer > myrpt->p.elke)) totx = 0;
 		if (totx && (!lasttx))
 		{
-			char mydate[100], myfname[100];
-
 			if (myrpt->monstream) ast_closestream(myrpt->monstream);
 			myrpt->monstream = 0;
 			if (myrpt->p.archivedir)
 			{
 				long blocksleft;
 
-				time(&myrpt->startkey);
-				strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-					localtime(&myrpt->startkey));
-				sprintf(myfname,"%s/%s/%s",myrpt->p.archivedir,
-					myrpt->name,mydate);
-				myrpt->monstream = ast_writefile(myfname,"wav49",
+				rpt_info_key(myrpt,'S');
+				myrpt->monstream = ast_writefile(myrpt->info->filename,"wav49",
 					"app_rpt Air Archive",O_CREAT | O_APPEND,0,0600);
 				if (myrpt->p.monminblocks)
 				{
@@ -19910,6 +19982,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					if (blocksleft >= myrpt->p.monminblocks)
 						donodelog(myrpt,"TXKEY,MAIN");
 				} else donodelog(myrpt,"TXKEY,MAIN");
+				ast_verbose("TXKEY MAIN :19984\n");
 			}
 			rpt_update_boolean(myrpt,"RPT_TXKEYED",1);
 			lasttx = 1;
@@ -19930,6 +20003,8 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			if (myrpt->monstream) ast_closestream(myrpt->monstream);
 			myrpt->monstream = NULL;
 
+			rpt_info_unkey(myrpt);
+			ast_verbose("TXUNKEYYYYYY MAIN 20005\n");
 			lasttx = 0;
 			myrpt->txkeyed = 0;
 			time(&myrpt->lasttxkeyedtime);
@@ -20152,8 +20227,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					if (myrpt->p.archivedir)
 					{
 						char str[100];
-						time(&myrpt->endkey);
-						recording_log(myrpt,'S',l->name);
 						sprintf(str,"RXUNKEY,%s",l->name);
 						donodelog(myrpt,str);
 					}
@@ -20246,8 +20319,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						{
 							char str[100];
 	
-							time(&myrpt->endkey);
-							recording_log(myrpt,'S',l->name);
 							sprintf(str,"RXUNKEY(T),%s",l->name);
 							donodelog(myrpt,str);
 						}
@@ -20670,7 +20741,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					if ((op == 1) && ((arg == 0) || (arg == 0x80)))
 					{
 						myrpt->lastunit = unitID;
-						sprintf(ustr,"I%04X",unitID);
+						sprintf(ustr,"%04X",unitID);
 						mdc1200_notify(myrpt,NULL,ustr);
 						mdc1200_send(myrpt,ustr);
 						mdc1200_cmd(myrpt,ustr);
@@ -20741,7 +20812,10 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							rpt_manager_trigger(myrpt,
 								myrpt->selcall->dem_st[i].dem_par->name,
 								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							strcpy(myrpt->lastdecode,str);
+							strcpy(myrpt->info->decoder,
+								myrpt->selcall->dem_st[i].dem_par->name);
+							strcpy(myrpt->info->unitID,
+								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
 							donodelog(myrpt,str);
 							ast_verbose("NODE %s: %s\n", myrpt->name,str);
 							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,
@@ -20750,13 +20824,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					}
 				}
 #endif
-				if(strlen(myrpt->lastdtmfbuf) >= 3) {
-					sprintf(str,"DTMF,%s", myrpt->lastdtmfbuf);
-					strcpy(myrpt->lastdecode,str);
-					donodelog(myrpt,str);
-					ast_verbose("NODE %s: %s\n", myrpt->name, str);
-					memset(myrpt->lastdtmfbuf,0,sizeof(myrpt->lastdtmfbuf));
-				}
 #ifdef	__RPT_NOTCH
 				/* apply inbound filters, if any */
 				rpt_filter(myrpt,AST_FRAME_DATAP(f),f->datalen / 2);
@@ -20828,7 +20895,11 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			{
 				c = (char) f->subclass; /* get DTMF char */
 				ast_frfree(f);
-				strncat(myrpt->lastdtmfbuf, &c, 1);
+				if(myrpt->reallykeyed) {
+					strcpy(myrpt->info->decoder,"DTMF");
+					strcat(myrpt->info->unitID,&c);
+					ast_verbose("NODE %s: %s\n", myrpt->name, myrpt->info->unitID);
+				}
 #ifndef	OLD_ASTERISK
 				x = ast_tvdiff_ms(ast_tvnow(),myrpt->lastdtmftime);
 				if ((myrpt->p.litzcmd) && (x >= myrpt->p.litztime) &&
@@ -20892,27 +20963,22 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					{
 						if (myrpt->p.duplex < 2)
 						{
-							char myfname[100],mydate[100];
 							long blocksleft;
 
-							time(&myrpt->startkey);
-							strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-								localtime(&myrpt->startkey));
-							sprintf(myfname,"%s/%s/%s",myrpt->p.archivedir,
-								myrpt->name,mydate);
+							rpt_info_key(myrpt,'E');
 							if (myrpt->p.monminblocks)
 							{
 								blocksleft = diskavail(myrpt);
 								if (blocksleft >= myrpt->p.monminblocks)
 								{
-									myrpt->monstream = ast_writefile(myfname,"wav49",
+									myrpt->monstream = ast_writefile(myrpt->info->filename,"wav49",
 										"app_rpt Air Archive",O_CREAT | O_APPEND,0,0600);
 								}
 							}
 						}
+						ast_verbose("RXKEY MAIN :20982\n");
 						donodelog(myrpt,"RXKEY,MAIN");
 					}
-					memset(myrpt->lastdecode,0,sizeof(myrpt->lastdecode));
 					rpt_update_boolean(myrpt,"RPT_RXKEYED",1);
 					myrpt->elketimer = 0;
 					myrpt->localoverride = 0;
@@ -21013,9 +21079,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					}
 					if (myrpt->p.archivedir)
 					{
-
-						time(&myrpt->endkey);
-						recording_log(myrpt,'E',myrpt->lastdecode);
+						rpt_info_unkey(myrpt);
 						donodelog(myrpt,"RXUNKEY,MAIN");
 					}
 					rpt_update_boolean(myrpt,"RPT_RXKEYED",0);
@@ -21424,7 +21488,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							{
 								char str[100];
 
-								time(&myrpt->startkey);
+								strcpy(myrpt->info->unitID,l->name);
 								sprintf(str,"RXKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -21602,8 +21666,9 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							if (myrpt->p.archivedir)
 							{
 								char str[100];
-
-								time(&myrpt->startkey);
+							
+								strcpy(myrpt->info->unitID,l->name);
+								ast_verbose("RXKEY %s :21675\n",l->name);
 								sprintf(str,"RXKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -21625,8 +21690,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							{
 								char str[100];
 
-								time(&myrpt->endkey);
-								recording_log(myrpt,'S',l->name);
 								sprintf(str,"RXUNKEY,%s",l->name);
 								donodelog(myrpt,str);
 							}
@@ -22057,6 +22120,7 @@ char *demod[MAXDEMOD];
 #ifdef	_MDC_DECODE_H_
 		rpt_vars[n].mdc = mdc_decoder_new(8000);
 #endif
+		rpt_vars[n].info = rpt_info_init();
 		n++;
 	}
 	nrpts = n;
@@ -23468,13 +23532,11 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 		char mydate[100],mycmd[100];
 		long blocksleft;
 
-
 		mkdir(myrpt->p.archivedir,0600);
 		sprintf(mycmd,"%s/%s",myrpt->p.archivedir,myrpt->name);
 		mkdir(mycmd,0600);
-		time(&myrpt->startkey);
 		strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
-			localtime(&myrpt->startkey));
+			localtime(&myrpt->info->startkey.tv_sec));
 		sprintf(mycmd,"mixmonitor start %s %s/%s/%s.wav49 a",chan->name,
 			myrpt->p.archivedir,myrpt->name,mydate);
 		if (myrpt->p.monminblocks)
@@ -23778,8 +23840,9 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 					{
 						ast_indicate(myrpt->txchannel,AST_CONTROL_RADIO_KEY);
 					}
-					rpt_update_boolean(myrpt,"RPT_TXKEYED",1);
 					if (myrpt->p.archivedir) donodelog(myrpt,"TXKEY");
+					ast_verbose("TXKEY NOSESABE :23850\n");
+					rpt_update_boolean(myrpt,"RPT_TXKEYED",1);
 				}
 			}
 		}
@@ -24214,14 +24277,11 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 static void rpt_manager_trigger(struct rpt *myrpt, char *event, char *value)
 {
 	manager_event(EVENT_FLAG_CALL, event,
-                "Node: %s\r\n"
-		"Channel: %s\r\n"
-		"EventValue: %s\r\n"
-		"StartKey: %s\r\n"
-		"EndKey: %s\r\n",
-                myrpt->name, myrpt->rxchannel->name, value,
-                ctime(&myrpt->startkey), ctime(&myrpt->endkey)
-        );
+		"EventValue=%s\r\n"
+		"Nodo=%s\r\n"
+		"Canal=%s\r\n"
+		"LinkId=%s\r\n",
+		value, myrpt->p.node, myrpt->name, myrpt->info->linkid);
 }
 
 #ifndef OLD_ASTERISK
@@ -25440,6 +25500,7 @@ char	*val,*this,*demod[MAXDEMOD];
 				rpt_vars[n].selcall = selcall_decoder_new(demod, numd);
 			}
 #endif
+			rpt_vars[n].info = rpt_info_init();
 			rpt_vars[n].reload1 = 1;
 			if (n >= nrpts) nrpts = n + 1;
 		}
