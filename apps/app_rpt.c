@@ -516,6 +516,8 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision$")
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fnmatch.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #include "asterisk/utils.h"
 #include "asterisk/lock.h"
@@ -557,7 +559,7 @@ struct ast_flags config_flags = { CONFIG_FLAG_WITHCOMMENTS };
 /* #include "rpt_notch.c" */
 
 /* Un-comment the following to include support decoding of selcall signalling protocol */
-#include "../decoders/selcall/selcall.c"
+#include "selcall.c"
 
 #ifdef	__RPT_NOTCH
 #define	MAXFILTERS 10
@@ -1056,7 +1058,12 @@ static struct rpt
 	mdc_decoder_t *mdc;
 #endif
 #ifdef	_SELCALL_H_
-	selcall_decoder_t *selcall;
+	selcall_decoder_t *ccir;
+	selcall_decoder_t *eea;
+	selcall_decoder_t *eia;
+	selcall_decoder_t *zvei1;
+	selcall_decoder_t *zvei2;
+	selcall_decoder_t *zvei3;
 #endif
 	rpt_info *info;
 
@@ -1186,9 +1193,9 @@ static struct rpt
 		char *timezone;
 		char *cate;
 		char *node;
-#ifdef	_SELCALL_H_
-		char *selcall;
-#endif
+		int uid;
+		int gid;
+		char *decoders;
 	} p;
 	struct rpt_link links;
 	int unkeytocttimer;
@@ -1387,6 +1394,7 @@ static rpt_info* rpt_info_init(void);
 static void rpt_info_key(struct rpt *myrpt, char inout);
 static void rpt_info_unkey(struct rpt *myrpt);
 static void rpt_info_log(struct rpt *myrpt);
+static void process_selcall(struct rpt *myrpt, struct ast_frame *f, selcall_decoder_t *s);
 
 AST_MUTEX_DEFINE_STATIC(nodeloglock);
 
@@ -1591,6 +1599,34 @@ static const char *my_variable_match(const struct ast_config *config, const char
 
 	}
 	return NULL;
+}
+#endif
+
+#ifdef	_SELCALL_H_
+void process_selcall(struct rpt *myrpt, struct ast_frame *f, selcall_decoder_t *s)
+{ 
+    int len = f->datalen;
+    short *sp = (short *) AST_FRAME_DATAP(f);
+
+    if (len > 0) {
+	memcpy(s->sbuf, sp, sizeof(s->sbuf));
+
+	for (; (unsigned int) len >= sizeof(s->sbuf[0]); len -= sizeof(s->sbuf[0]), sp++)
+		s->fbuf[s->fbuf_cnt++] = (*sp) * (1.0/32768.0);
+
+        if (s->fbuf_cnt > s->overlap) {
+		selcall_demod(s);
+                memmove(s->fbuf, s->fbuf+s->fbuf_cnt-s->overlap, s->overlap*sizeof(s->fbuf[0]));
+                s->fbuf_cnt = s->overlap;
+        }
+    }
+   
+    if(strlen(s->tonebuf) >= 5) {
+	strcpy(myrpt->info->decoder,s->name);
+	strcpy(myrpt->info->unitID,s->tonebuf);
+        ast_verbose("%s: %s\n", s->name, s->tonebuf);
+        memset(s->tonebuf,0,sizeof(s->tonebuf));
+    }
 }
 #endif
 
@@ -4604,7 +4640,6 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 	sprintf(str,"MDC,%s",data);
 	strcpy(myrpt->info->decoder,"MDC1200");
 	strcpy(myrpt->info->unitID,data);
-	rpt_manager_trigger(myrpt, "UnitID", data);
 
 	if (!fromnode)
 	{
@@ -4642,6 +4677,25 @@ static void mdc1200_notify(struct rpt *myrpt,char *fromnode, char *data)
 		ast_verbose("Got MDC-1200 data %s from node %s (%s)\n",
 			data,fromnode,myrpt->name);
 	}
+}
+
+static void unitID_send(struct rpt *myrpt, char *data)
+{
+	char str[200];
+	struct rpt_link *l;
+
+	if (!myrpt->keyed) return;
+
+	sprintf(str,"UnitID=%s",data);
+
+	l = myrpt->links.next;
+
+	while(l != &myrpt->links) {
+		ast_sendtext(l->chan, str);
+		l = l->next;
+	}
+
+	return;
 }
 
 #ifdef	_MDC_DECODE_H_
@@ -6058,6 +6112,10 @@ static char *cs_keywords[] = {"rptena","rptdis","apena","apdis","lnkena","lnkdis
 	if (val) rpt_vars[n].p.cate = val;
 	val = (char *) ast_variable_retrieve(cfg,"general","node");
 	if (val) rpt_vars[n].p.node = val;
+	val = (char *) ast_variable_retrieve(cfg,"general","uid");
+	rpt_vars[n].p.uid = val ? atoi(val) : 0;
+	val = (char *) ast_variable_retrieve(cfg,"general","gid");
+	rpt_vars[n].p.gid = val ? atoi(val) : 0;
 	val = (char *) ast_variable_retrieve(cfg,this,"context");
 	if (val) rpt_vars[n].p.ourcontext = val;
 	else rpt_vars[n].p.ourcontext = this;
@@ -6454,9 +6512,17 @@ static char *cs_keywords[] = {"rptena","rptdis","apena","apdis","lnkena","lnkdis
 	    }
 	}
 
+	val = (char *) ast_variable_retrieve(cfg,this,"decoders");
+#ifdef	_MDC_DECODE_H_
+	if(strstr(val, "mdc1200")) rpt_vars[n].mdc = mdc_decoder_new(8000);
+#endif
 #ifdef	_SELCALL_H_
-	val = (char *) ast_variable_retrieve(cfg,this,"selcall");
-	rpt_vars[n].p.selcall = val;
+	if(strstr(val, "ccir"))  rpt_vars[n].ccir  = selcall_decoder_new("CCIR",  ccir_freq);
+	if(strstr(val, "eea"))   rpt_vars[n].eea   = selcall_decoder_new("EEA",   eea_freq);
+	if(strstr(val, "eia"))   rpt_vars[n].eia   = selcall_decoder_new("EIA",   eia_freq);
+	if(strstr(val, "zvei1")) rpt_vars[n].zvei1 = selcall_decoder_new("ZVEI1", zvei1_freq);
+	if(strstr(val, "zvei2")) rpt_vars[n].zvei2 = selcall_decoder_new("ZVEI2", zvei2_freq);
+	if(strstr(val, "zvei3")) rpt_vars[n].zvei3 = selcall_decoder_new("ZVEI3", zvei3_freq);
 #endif
 
 	longestnode = 0;
@@ -18983,9 +19049,13 @@ struct rpt_tele *telem;
 char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 
 
-	if (myrpt->p.archivedir) mkdir(myrpt->p.archivedir,0600);
+	if (myrpt->p.archivedir) {
+		mkdir(myrpt->p.archivedir,0744);
+		chown(myrpt->p.archivedir,myrpt->p.uid,myrpt->p.gid);
+	}
 	sprintf(tmpstr,"%s/%s",myrpt->p.archivedir,myrpt->name);
-	mkdir(tmpstr,0600);
+	mkdir(tmpstr,0744);
+	chown(tmpstr,myrpt->p.uid,myrpt->p.gid);
 	myrpt->ready = 0;
 	rpt_mutex_lock(&myrpt->lock);
 	myrpt->remrx = 0;
@@ -19865,7 +19935,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			{
 				rpt_info_key(myrpt,'S');
 				myrpt->monstream = ast_writefile(myrpt->info->filename,"wav49",
-					"app_rpt Air Archive",O_CREAT | O_APPEND,0,0600);
+					"app_rpt Air Archive",O_CREAT | O_APPEND,0,0666);
 			}
 			rpt_update_boolean(myrpt,"RPT_TXKEYED",1);
 			lasttx = 1;
@@ -20505,38 +20575,11 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 			}
 			if (f->frametype == AST_FRAME_VOICE)
 			{
+				short *sp;
 #ifdef	_MDC_DECODE_H_
 				unsigned char ubuf[2560];
-				short *sp;
 				int n;
 #endif
-				if (myrpt->p.rxburstfreq)
-				{
-					if ((!myrpt->reallykeyed) || myrpt->keyed)
-					{
-						myrpt->lastrxburst = 0;
-						goertzel_reset(&myrpt->burst_tone_state.tone);
-						myrpt->burst_tone_state.last_hit = 0;
-						myrpt->burst_tone_state.hit_count = 0;
-						myrpt->burst_tone_state.energy = 0.0;
-						
-					}
-					else
-					{					
-						i = tone_detect(&myrpt->burst_tone_state,AST_FRAME_DATAP(f),f->samples);
-						ast_log(LOG_DEBUG,"Node %s got %d Hz Rx Burst\n",
-							myrpt->name,myrpt->p.rxburstfreq);
-						if ((!i) && myrpt->lastrxburst)
-						{
-							ast_log(LOG_DEBUG,"Node %s now keyed after Rx Burst\n",myrpt->name);
-							myrpt->linkactivitytimer = 0;
-							myrpt->keyed = 1;
-							time(&myrpt->lastkeyedtime);
-							myrpt->keyposttimer = KEYPOSTSHORTTIME;
-						}
-						myrpt->lastrxburst = i;
-					}
-				}
 				if (myrpt->p.dtmfkey)
 				{
 					if ((!myrpt->reallykeyed) || myrpt->keyed)
@@ -20554,116 +20597,103 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						myrpt->keyposttimer = KEYPOSTSHORTTIME;
 					}
 				}
-#ifdef	_MDC_DECODE_H_
 				if (!myrpt->reallykeyed)
 				{
 					memset(AST_FRAME_DATAP(f),0,f->datalen);
 				}
-				sp = (short *) AST_FRAME_DATAP(f);
-				/* convert block to unsigned char */
-				for(n = 0; n < f->datalen / 2; n++)
-				{
-					ubuf[n] = (*sp++ >> 8) + 128;
-				}
-				n = mdc_decoder_process_samples(myrpt->mdc,ubuf,f->datalen / 2);
-				if (n == 1)
-				{
+				else {
+					if(myrpt->mdc) {
+						sp = (short *) AST_FRAME_DATAP(f);
 
-					unsigned char op,arg;
-					unsigned short unitID;
-					char ustr[10];
+						/* convert block to unsigned char */
+						for(n = 0; n < f->datalen / 2; n++)
+						{
+							ubuf[n] = (*sp++ >> 8) + 128;
+						}
+						n = mdc_decoder_process_samples(myrpt->mdc,ubuf,f->datalen / 2);
+						if (n == 1)
+						{
 
-					mdc_decoder_get_packet(myrpt->mdc,&op,&arg,&unitID);
-					if (option_verbose)
-					{
-						ast_verbose("Got MDC-1200 (single-length) packet on node %s:\n",myrpt->name);
-						ast_verbose("op: %02x, arg: %02x, UnitID: %04x\n",
-							op & 255,arg & 255,unitID);
-					}
-					/* if for PTT ID */
-					if ((op == 1) && ((arg == 0) || (arg == 0x80)))
-					{
-						myrpt->lastunit = unitID;
-						sprintf(ustr,"%04X",unitID);
-						mdc1200_notify(myrpt,NULL,ustr);
-						mdc1200_send(myrpt,ustr);
-						mdc1200_cmd(myrpt,ustr);
-					}
-					/* if for EMERGENCY */
-					if ((op == 0) && ((arg == 0x81) || (arg == 0x80)))
-					{
-						myrpt->lastunit = unitID;
-						sprintf(ustr,"E%04X",unitID);
-						mdc1200_notify(myrpt,NULL,ustr);
-						mdc1200_send(myrpt,ustr);
-						mdc1200_cmd(myrpt,ustr);
-					}
-					/* if for STS (status)  */
-					if (op == 0x46)
-					{
-						myrpt->lastunit = unitID;
-						sprintf(ustr,"S%04X-%X",unitID,arg & 0xf);
+							unsigned char op,arg;
+							unsigned short unitID;
+							char ustr[10];
+
+							mdc_decoder_get_packet(myrpt->mdc,&op,&arg,&unitID);
+							if (option_verbose)
+							{
+								ast_verbose("Got MDC-1200 (single-length) packet on node %s:\n",myrpt->name);
+								ast_verbose("op: %02x, arg: %02x, UnitID: %04x\n",
+									op & 255,arg & 255,unitID);
+							}
+							/* if for PTT ID */
+							if ((op == 1) && ((arg == 0) || (arg == 0x80)))
+							{
+								myrpt->lastunit = unitID;
+								sprintf(ustr,"%04X",unitID);
+								unitID_send(myrpt,ustr);
+								mdc1200_notify(myrpt,NULL,ustr);
+								mdc1200_cmd(myrpt,ustr);
+							}
+							/* if for EMERGENCY */
+							if ((op == 0) && ((arg == 0x81) || (arg == 0x80)))
+							{
+								myrpt->lastunit = unitID;
+								sprintf(ustr,"E%04X",unitID);
+								mdc1200_notify(myrpt,NULL,ustr);
+								mdc1200_send(myrpt,ustr);
+								mdc1200_cmd(myrpt,ustr);
+							}
+							/* if for STS (status)  */
+							if (op == 0x46)
+							{
+								myrpt->lastunit = unitID;
+								sprintf(ustr,"S%04X-%X",unitID,arg & 0xf);
 #ifdef	_MDC_ENCODE_H_
-						mdc1200_ack_status(myrpt,unitID);
+								mdc1200_ack_status(myrpt,unitID);
 #endif
-						mdc1200_notify(myrpt,NULL,ustr);
-						mdc1200_send(myrpt,ustr);
-						mdc1200_cmd(myrpt,ustr);
-					}
-				}
-				if (n == 2)
-				{
-					unsigned char op,arg,ex1,ex2,ex3,ex4;
-					unsigned short unitID;
-					char ustr[20];
+								mdc1200_notify(myrpt,NULL,ustr);
+								mdc1200_send(myrpt,ustr);
+								mdc1200_cmd(myrpt,ustr);
+							}
+						}
+						if (n == 2)
+						{
+							unsigned char op,arg,ex1,ex2,ex3,ex4;
+							unsigned short unitID;
+							char ustr[20];
 
-					mdc_decoder_get_double_packet(myrpt->mdc,&op,&arg,&unitID,
-						&ex1,&ex2,&ex3,&ex4);
-					if (option_verbose)
-					{
-						ast_verbose("Got MDC-1200 (double-length) packet on node %s:\n",myrpt->name);
-						ast_verbose("op: %02x, arg: %02x, UnitID: %04x\n",
-							op & 255,arg & 255,unitID);
-						ast_verbose("ex1: %02x, ex2: %02x, ex3: %02x, ex4: %02x\n",
-							ex1 & 255, ex2 & 255, ex3 & 255, ex4 & 255);
-					}
-					/* if for SelCall or Alert */
-					if ((op == 0x35) && (arg = 0x89))
-					{
-						/* if is Alert */
-						if (ex1 & 1) sprintf(ustr,"A%02X%02X-%04X",ex3 & 255,ex4 & 255,unitID);
-						/* otherwise is selcall */
-						else  sprintf(ustr,"S%02X%02X-%04X",ex3 & 255,ex4 & 255,unitID);
-						mdc1200_notify(myrpt,NULL,ustr);
-						mdc1200_send(myrpt,ustr);
-						mdc1200_cmd(myrpt,ustr);
-					}
-				}
-#endif
-#ifdef	_SELCALL_H_
-				int i;
-				char str[100];
-
-				if(myrpt->reallykeyed && myrpt->p.selcall) {
-					sp = (short *) AST_FRAME_DATAP(f);
-					process_selcall(sp,f->datalen, myrpt->selcall);
-					for(i = 0; i < myrpt->selcall->numdemod; i++) {
-						if(strlen(myrpt->selcall->dem_st[i].dem_par->selcall_buf) > 4) {
-							sprintf(str,"%s,%s",
-								myrpt->selcall->dem_st[i].dem_par->name,
-								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							strcpy(myrpt->info->decoder,
-								myrpt->selcall->dem_st[i].dem_par->name);
-							strcpy(myrpt->info->unitID,
-								myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							rpt_manager_trigger(myrpt, "UnitID", myrpt->selcall->dem_st[i].dem_par->selcall_buf);
-							ast_verbose("NODE %s: %s\n", myrpt->name,str);
-							memset(myrpt->selcall->dem_st[i].dem_par->selcall_buf,0,
-								sizeof(myrpt->selcall->dem_st[i].dem_par->selcall_buf));
+							mdc_decoder_get_double_packet(myrpt->mdc,&op,&arg,&unitID,
+								&ex1,&ex2,&ex3,&ex4);
+							if (option_verbose)
+							{
+								ast_verbose("Got MDC-1200 (double-length) packet on node %s:\n",myrpt->name);
+								ast_verbose("op: %02x, arg: %02x, UnitID: %04x\n",
+									op & 255,arg & 255,unitID);
+								ast_verbose("ex1: %02x, ex2: %02x, ex3: %02x, ex4: %02x\n",
+									ex1 & 255, ex2 & 255, ex3 & 255, ex4 & 255);
+							}
+							/* if for SelCall or Alert */
+							if ((op == 0x35) && (arg = 0x89))
+							{
+								/* if is Alert */
+								if (ex1 & 1) sprintf(ustr,"A%02X%02X-%04X",ex3 & 255,ex4 & 255,unitID);
+								/* otherwise is selcall */
+								else  sprintf(ustr,"S%02X%02X-%04X",ex3 & 255,ex4 & 255,unitID);
+								mdc1200_notify(myrpt,NULL,ustr);
+								mdc1200_send(myrpt,ustr);
+								mdc1200_cmd(myrpt,ustr);
+							}
 						}
 					}
-				}
+#ifdef	_SELCALL_H_
+					if(myrpt->ccir)  process_selcall(myrpt, f, myrpt->ccir);
+					if(myrpt->eea)   process_selcall(myrpt, f, myrpt->eea);
+					if(myrpt->eia)   process_selcall(myrpt, f, myrpt->eia);
+					if(myrpt->zvei1) process_selcall(myrpt, f, myrpt->zvei1);
+					if(myrpt->zvei2) process_selcall(myrpt, f, myrpt->zvei2);
+					if(myrpt->zvei3) process_selcall(myrpt, f, myrpt->zvei3);
 #endif
+				}
 #ifdef	__RPT_NOTCH
 				/* apply inbound filters, if any */
 				rpt_filter(myrpt,AST_FRAME_DATAP(f),f->datalen / 2);
@@ -20738,6 +20768,8 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 				if(myrpt->reallykeyed) {
 					strcpy(myrpt->info->decoder,"DTMF");
 					strncat(myrpt->info->unitID,&c,1);
+					if(strlen(myrpt->info->unitID) >= 3)
+						unitID_send(myrpt, myrpt->info->unitID);
 					ast_verbose("NODE %s: %s\n", myrpt->name, myrpt->info->unitID);
 				}
 #ifndef	OLD_ASTERISK
@@ -20812,7 +20844,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 								if (blocksleft >= myrpt->p.monminblocks)
 								{
 									myrpt->monstream = ast_writefile(myrpt->info->filename,"wav49",
-										"app_rpt Air Archive",O_CREAT | O_APPEND,0,0600);
+										"app_rpt Air Archive",O_CREAT | O_APPEND,0,0666);
 								}
 							}
 						}
@@ -20824,7 +20856,7 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					{
 						char *val, busy = 0;
 
-						send_link_pl(myrpt,AST_FRAME_DATAP(f));
+						//send_link_pl(myrpt,AST_FRAME_DATAP(f));
 
 						if (myrpt->p.nlocallist)
 						{
@@ -20840,47 +20872,11 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 						} 
 						if (debug) ast_log(LOG_NOTICE,"Got PL %s on node %s\n",(char *)AST_FRAME_DATAP(f),myrpt->name);
 						// ctcss code autopatch initiate
-						if (strstr((char *)AST_FRAME_DATAP(f),"/M/")&& !myrpt->macropatch)
-						{
-						    char val[16];
-							strcat(val,"*6");
-							myrpt->macropatch=1;
-							rpt_mutex_lock(&myrpt->lock);
-							if ((MAXMACRO - strlen(myrpt->macrobuf)) < strlen(val)){
-								rpt_mutex_unlock(&myrpt->lock);
-								busy=1;
-							}
-							if(!busy){
-								myrpt->macrotimer = MACROTIME;
-								strncat(myrpt->macrobuf,val,MAXMACRO - 1);
-								if (!busy) strcpy(myrpt->lasttone,(char*)AST_FRAME_DATAP(f));
-							}
-							rpt_mutex_unlock(&myrpt->lock);
-						}
-						else if (strcmp((char *)AST_FRAME_DATAP(f),myrpt->lasttone))
-						{
-							val = (char *) ast_variable_retrieve(myrpt->cfg, myrpt->p.tonemacro, (char *)AST_FRAME_DATAP(f));
-							if (val) 
-							{
-								if (debug) ast_log(LOG_NOTICE,"Tone %s doing %s on node %s\n",(char *) AST_FRAME_DATAP(f),val,myrpt->name);
-								rpt_mutex_lock(&myrpt->lock);
-								if ((MAXMACRO - strlen(myrpt->macrobuf)) < strlen(val)){
-									rpt_mutex_unlock(&myrpt->lock);
-									busy=1;
-								}
-								if(!busy){
-									myrpt->macrotimer = MACROTIME;
-									strncat(myrpt->macrobuf,val,MAXMACRO - 1);
-								}
-								rpt_mutex_unlock(&myrpt->lock);
-							}
-						 	if (!busy) strcpy(myrpt->lasttone,(char*)AST_FRAME_DATAP(f));
-						}
 					} 
 					else
 					{
 						myrpt->lasttone[0] = 0;
-						send_link_pl(myrpt,"0");
+						//send_link_pl(myrpt,"0");
 					}
 				}
 				/* if RX un-key */
@@ -20894,15 +20890,15 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 							ast_log(LOG_NOTICE,"**** rx un-key\n");
 		
 						if((!asleep) && myrpt->p.duplex && myrpt->keyed) {
-							rpt_telemetry(myrpt,UNKEY,NULL);
+							//rpt_telemetry(myrpt,UNKEY,NULL);
 						}
 					}
-					send_link_pl(myrpt,"0");
+					//send_link_pl(myrpt,"0");
 					myrpt->reallykeyed = 0;
 					myrpt->keyed = 0;
 					if ((myrpt->p.duplex > 1) && (!asleep) && myrpt->localoverride)
 					{
-						rpt_telemetry(myrpt,LOCUNKEY,NULL);
+						//rpt_telemetry(myrpt,LOCUNKEY,NULL);
 					}
 					myrpt->localoverride = 0;
 					time(&myrpt->lastkeyedtime);
@@ -20944,57 +20940,6 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 					{
 						myrpt->paging.tv_sec = 0;
 						myrpt->paging.tv_usec = 0;
-					}
-				}
-				/* if is a BeagleBoard device */
-				if (strncasecmp(myrpt->rxchannel->name,"beagle/", 7) == 0)
-				{
-					/* if message parsable */
-					if (sscanf(AST_FRAME_DATAP(f),"GPIO%d %d",&i,&j) >= 2)
-					{
-						sprintf(buf,"RPT_BEAGLE_GPIO%d",i);
-						rpt_update_boolean(myrpt,buf,j);
-					}
-				}
-				/* if is a Voter device */
-				if (strncasecmp(myrpt->rxchannel->name,"voter/", 6) == 0)
-				{
-					struct rpt_link *l;
-					struct	ast_frame wf;
-					char	str[200];
-
-
-					if (!strcmp(AST_FRAME_DATAP(f),"ENDPAGE"))
-					{
-						myrpt->paging.tv_sec = 0;
-						myrpt->paging.tv_usec = 0;
-					}
-					else
-					{
-						sprintf(str,"V %s %s",myrpt->name,(char *)AST_FRAME_DATAP(f));
-						wf.frametype = AST_FRAME_TEXT;
-						wf.subclass = 0;
-						wf.offset = 0;
-						wf.mallocd = 0;
-						wf.datalen = strlen(str) + 1;
-						wf.samples = 0;
-						wf.src = "voter_text_send";
-
-
-						l = myrpt->links.next;
-						/* otherwise, send it to all of em */
-						while(l != &myrpt->links)
-						{
-							/* Dont send to other then IAXRPT client */
-							if ((l->name[0] != '0') || (l->phonemode))
-							{
-								l = l->next;
-								continue;
-							}
-							AST_FRAME_DATA(wf) = str;
-							if (l->chan) rpt_qwrite(l,&wf); 
-							l = l->next;
-						}
 					}
 				}
 			}
@@ -21817,11 +21762,11 @@ char tmpstr[300],lstr[MAXLINKLIST],lat[100],lon[100],elev[100];
 	
 static void *rpt_master(void *ignore)
 {
-int	i,n,numd;
+int	i,n;//numd;
 pthread_attr_t attr;
 struct ast_config *cfg;
 char *this,*val;
-char *demod[MAXDEMOD];
+//char *demod[MAXDEMOD];
 
 	/* init nodelog queue */
 	nodelog.next = nodelog.prev = &nodelog;
@@ -21887,9 +21832,6 @@ char *demod[MAXDEMOD];
 		rpt_vars[n].tele.prev = &rpt_vars[n].tele;
 		rpt_vars[n].rpt_thread = AST_PTHREADT_NULL;
 		rpt_vars[n].tailmessagen = 0;
-#ifdef	_MDC_DECODE_H_
-		rpt_vars[n].mdc = mdc_decoder_new(8000);
-#endif
 		rpt_vars[n].info = rpt_info_init();
 		n++;
 	}
@@ -21939,12 +21881,6 @@ char *demod[MAXDEMOD];
 			}
 			ast_log(LOG_NOTICE,"Normal Repeater Init  %s  %s  %s\n",rpt_vars[i].name, rpt_vars[i].remoterig, rpt_vars[i].freq);
 		}
-#ifdef	_SELCALL_H_
-		if(rpt_vars[i].p.selcall) {
-			numd = explode_string(rpt_vars[i].p.selcall, demod, MAXDEMOD, ',', 0);
-			rpt_vars[i].selcall = selcall_decoder_new(demod, numd);
-		}
-#endif
 		if (rpt_vars[i].p.ident && (!*rpt_vars[i].p.ident))
 		{
 			ast_log(LOG_WARNING,"Did not specify ident for node %s\n",rpt_vars[i].name);
@@ -23290,9 +23226,11 @@ static int rpt_exec(struct ast_channel *chan, void *data)
 		char mydate[100],mycmd[100];
 		long blocksleft;
 
-		mkdir(myrpt->p.archivedir,0600);
+		mkdir(myrpt->p.archivedir,0666);
+		chown(myrpt->p.archivedir,myrpt->p.uid,myrpt->p.gid);
 		sprintf(mycmd,"%s/%s",myrpt->p.archivedir,myrpt->name);
-		mkdir(mycmd,0600);
+		mkdir(mycmd,0666);
+		chown(mycmd,myrpt->p.uid,myrpt->p.gid);
 		strftime(mydate,sizeof(mydate) - 1,"%Y%m%d%H%M%S",
 			localtime(&myrpt->info->startkey.tv_sec));
 		sprintf(mycmd,"mixmonitor start %s %s/%s/%s.wav49 a",chan->name,
@@ -25185,9 +25123,9 @@ int reload()
 static int reload(void)
 #endif
 {
-int	i,n,numd;
+int	i,n;//numd;
 struct ast_config *cfg;
-char	*val,*this,*demod[MAXDEMOD];
+char	*val,*this;//*demod[MAXDEMOD];
 
 #ifdef	NEW_ASTERISK
 	cfg = ast_config_load("rpt.conf",config_flags);
@@ -25251,16 +25189,6 @@ char	*val,*this,*demod[MAXDEMOD];
 			rpt_vars[n].tele.prev = &rpt_vars[n].tele;
 			rpt_vars[n].rpt_thread = AST_PTHREADT_NULL;
 			rpt_vars[n].tailmessagen = 0;
-#ifdef	_MDC_DECODE_H_
-			rpt_vars[n].mdc = mdc_decoder_new(8000);
-#endif
-#ifdef	_SELCALL_H_
-			if(rpt_vars[n].p.selcall) {
-				numd = explode_string(rpt_vars[n].p.selcall, demod, MAXDEMOD, ',', 0);
-				rpt_vars[n].selcall = selcall_decoder_new(demod, numd);
-			}
-#endif
-			rpt_vars[n].info = rpt_info_init();
 			rpt_vars[n].reload1 = 1;
 			if (n >= nrpts) nrpts = n + 1;
 		}

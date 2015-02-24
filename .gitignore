@@ -6,9 +6,8 @@
 
 !README.md
 
-!decoders/
-!decoders/selcall/
-!decoders/selcall/*
-
 !apps/
 !apps/app_rpt.c
+!apps/selcall.h
+!apps/selcall.c
+!apps/costabf.c
